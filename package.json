@@ -1,6 +1,6 @@
 {
   "name": "sowel-recipe-presence-display",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sowel recipe: sleep AMOLED displays on zone absence, wake on motion",
   "type": "module",
   "main": "dist/index.js",

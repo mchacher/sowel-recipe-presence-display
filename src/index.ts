@@ -156,8 +156,14 @@ function slots(): RecipeSlotDef[] {
 }
 
 // ============================================================
-// Recipe export
+// Recipe export — Sowel's RecipeLoader expects a `createRecipe`
+// factory function that returns the RecipeDefinition (cf. how
+// sowel-recipe-motion-light-dimmable et al. expose themselves).
 // ============================================================
+
+export function createRecipe(): RecipeDefinition {
+  return recipe;
+}
 
 const recipe: RecipeDefinition = {
   id: "presence-display",
@@ -344,5 +350,3 @@ const recipe: RecipeDefinition = {
     };
   },
 };
-
-export default recipe;

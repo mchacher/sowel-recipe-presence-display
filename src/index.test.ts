@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import recipe, { resolveBrightnessAlias } from "./index.js";
+import { createRecipe, resolveBrightnessAlias } from "./index.js";
+
+const recipe = createRecipe();
 
 // ============================================================
 // Fixtures + mock context
