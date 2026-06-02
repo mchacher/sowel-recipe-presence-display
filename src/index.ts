@@ -86,12 +86,10 @@ interface RecipeDefinition {
 // ============================================================
 
 const BRIGHTNESS_ORDER_CATEGORY = "set_display_brightness";
+const WAKE_ORDER_CATEGORY = "display_wake";
 const ABSENCE_MIN_MS = 30 * 1000;
 const ABSENCE_MAX_MS = 2 * 60 * 60 * 1000;
-const WAKE_MIN = 5;
-const WAKE_MAX = 100;
 const DEFAULT_ABSENCE = "5m";
-const DEFAULT_WAKE = 80;
 
 // ============================================================
 // Pure helpers — exported for the unit test
@@ -107,6 +105,21 @@ export function resolveBrightnessAlias(
 ): string | null {
   for (const b of orderBindings) {
     if (b.category === BRIGHTNESS_ORDER_CATEGORY) return b.alias;
+  }
+  return null;
+}
+
+/**
+ * Spec 122 — resolve the alias for the `display_wake` order.  The
+ * recipe dispatches this on motion-resumed; the firmware reads its
+ * own NVS `user_pct` and restores the panel to the user's preferred
+ * brightness — the recipe never has to know the value.
+ */
+export function resolveWakeAlias(
+  orderBindings: ReadonlyArray<{ alias: string; category?: string }>,
+): string | null {
+  for (const b of orderBindings) {
+    if (b.category === WAKE_ORDER_CATEGORY) return b.alias;
   }
   return null;
 }
@@ -143,15 +156,10 @@ function slots(): RecipeSlotDef[] {
       required: false,
       defaultValue: DEFAULT_ABSENCE,
     },
-    {
-      id: "wake_brightness",
-      name: "Wake brightness",
-      description: "Brightness applied on motion-resumed and on recipe deactivation (5..100 %)",
-      type: "number",
-      required: false,
-      defaultValue: DEFAULT_WAKE,
-      constraints: { min: WAKE_MIN, max: WAKE_MAX },
-    },
+    // Spec 122 — no `wake_brightness` slot.  The firmware owns the
+    // wake level via NVS `user_pct`; the recipe dispatches
+    // `display_wake` (no value) and the firmware restores the user's
+    // preference.
   ];
 }
 
@@ -177,7 +185,7 @@ const recipe: RecipeDefinition = {
     fr: {
       name: "Veille afficheur sur absence",
       description:
-        "Éteint les afficheurs Sowel après une période d'absence dans une zone, les réveille au mouvement suivant.",
+        "Éteint les afficheurs Sowel après une période d'absence dans une zone, les réveille au mouvement suivant à la dernière luminosité choisie par l'utilisateur.",
       slots: {
         zone: { name: "Zone", description: "Zone dont le mouvement pilote la veille / le réveil" },
         displays: {
@@ -187,10 +195,6 @@ const recipe: RecipeDefinition = {
         absence_threshold: {
           name: "Seuil d'absence",
           description: "Délai sans mouvement avant l'extinction des afficheurs",
-        },
-        wake_brightness: {
-          name: "Luminosité de réveil",
-          description: "Luminosité appliquée au mouvement repris et à la désactivation (5..100 %)",
         },
       },
     },
@@ -229,6 +233,15 @@ const recipe: RecipeDefinition = {
           `Display "${eq.name}" has no order of category "${BRIGHTNESS_ORDER_CATEGORY}" — cannot drive its brightness`,
         );
       }
+      // Spec 122 — wake capability is mandatory.  An older firmware
+      // that does not advertise `wake: true` in its state JSON ends
+      // up without this order; the recipe refuses to start so the
+      // user gets a clear error instead of a silent never-wake.
+      if (!resolveWakeAlias(eq.orderBindings)) {
+        throw new Error(
+          `Display "${eq.name}" has no order of category "${WAKE_ORDER_CATEGORY}" — firmware too old, upgrade to a build advertising "wake": true`,
+        );
+      }
     }
 
     const absenceRaw = params.absence_threshold ?? DEFAULT_ABSENCE;
@@ -237,11 +250,6 @@ const recipe: RecipeDefinition = {
       throw new Error(
         `absence_threshold must be between ${ABSENCE_MIN_MS / 1000} s and ${ABSENCE_MAX_MS / 1000 / 60} min`,
       );
-    }
-
-    const wake = params.wake_brightness !== undefined ? Number(params.wake_brightness) : DEFAULT_WAKE;
-    if (!Number.isFinite(wake) || wake < WAKE_MIN || wake > WAKE_MAX) {
-      throw new Error(`wake_brightness must be between ${WAKE_MIN} and ${WAKE_MAX}`);
     }
   },
 
@@ -254,8 +262,6 @@ const recipe: RecipeDefinition = {
       ? params.displays.filter((id): id is string => typeof id === "string")
       : [];
     const absenceMs = ctx.helpers.parseDuration(params.absence_threshold ?? DEFAULT_ABSENCE);
-    const wakeBrightness =
-      params.wake_brightness !== undefined ? Number(params.wake_brightness) : DEFAULT_WAKE;
 
     let state: RecipeState = "awake";
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -267,7 +273,8 @@ const recipe: RecipeDefinition = {
       }
     };
 
-    const dispatch = (value: number, label: string) => {
+    // Dispatch `set_display_brightness 0` (used on absence-triggered sleep).
+    const dispatchSleep = () => {
       for (const displayId of displayIds) {
         const eq = ctx.equipmentManager.getByIdWithDetails(displayId);
         if (!eq) continue;
@@ -279,9 +286,33 @@ const recipe: RecipeDefinition = {
           );
           continue;
         }
-        ctx.equipmentManager.executeOrder(displayId, alias, value).catch((err: unknown) => {
+        ctx.equipmentManager.executeOrder(displayId, alias, 0).catch((err: unknown) => {
           ctx.log(
-            `Failed to ${label} display "${eq.name}": ${err instanceof Error ? err.message : String(err)}`,
+            `Failed to sleep display "${eq.name}": ${err instanceof Error ? err.message : String(err)}`,
+            "warn",
+          );
+        });
+      }
+    };
+
+    // Spec 122 — dispatch `display_wake` (no value).  The firmware reads
+    // its NVS `user_pct` and restores the panel to the user's preferred
+    // brightness.  The recipe never has to know the value.
+    const dispatchWake = () => {
+      for (const displayId of displayIds) {
+        const eq = ctx.equipmentManager.getByIdWithDetails(displayId);
+        if (!eq) continue;
+        const alias = resolveWakeAlias(eq.orderBindings);
+        if (!alias) {
+          ctx.log(
+            `Display "${eq.name}" lost its wake order binding — skipping`,
+            "warn",
+          );
+          continue;
+        }
+        ctx.equipmentManager.executeOrder(displayId, alias, null).catch((err: unknown) => {
+          ctx.log(
+            `Failed to wake display "${eq.name}": ${err instanceof Error ? err.message : String(err)}`,
             "warn",
           );
         });
@@ -293,7 +324,7 @@ const recipe: RecipeDefinition = {
       state = "sleeping";
       timer = null;
       ctx.log(`No motion for ${Math.round(absenceMs / 1000)} s — putting displays to sleep`);
-      dispatch(0, "sleep");
+      dispatchSleep();
     };
 
     const goAwake = () => {
@@ -301,8 +332,8 @@ const recipe: RecipeDefinition = {
       cancelTimer();
       state = "awake";
       if (wasSleeping) {
-        ctx.log(`Motion resumed — waking displays at ${wakeBrightness}%`);
-        dispatch(wakeBrightness, "wake");
+        ctx.log("Motion resumed — waking displays to user-preferred brightness");
+        dispatchWake();
       }
     };
 
@@ -339,12 +370,12 @@ const recipe: RecipeDefinition = {
       stop() {
         unsubZone();
         cancelTimer();
-        // Safety: if displays were asleep, wake them back to wake_brightness
-        // so a deactivated recipe never leaves panels dark forever.
-        if (state === "sleeping") {
-          ctx.log("Recipe deactivated — waking displays back to wake_brightness");
-          dispatch(wakeBrightness, "wake (deactivate)");
-        }
+        // Spec 122 — do NOT dispatch wake on deactivate.  If the user
+        // disables the recipe while the panel is asleep, they will
+        // tap the panel to wake it (firmware wake-on-touch restores
+        // user_pct, then auto-resleeps after 2 min if nothing else
+        // happens).  Dispatching here would risk fighting the
+        // firmware's auto-resleep and the user's intent.
         state = "awake";
       },
     };

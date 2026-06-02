@@ -2,8 +2,8 @@
   "id": "presence-display",
   "type": "recipe",
   "name": "Presence-driven display sleep",
-  "version": "0.1.1",
-  "description": "Turns Sowel-supervised displays off after a configurable absence in a zone, wakes them on the next motion event.",
+  "version": "0.2.0",
+  "description": "Turns Sowel-supervised displays off after a configurable absence in a zone, wakes them at the user's last-chosen brightness on the next motion event.",
   "icon": "Monitor",
   "repo": "mchacher/sowel-recipe-presence-display",
   "author": "mchacher",
@@ -18,8 +18,8 @@
   "i18n": {
     "fr": {
       "name": "Veille afficheur sur absence",
-      "description": "Éteint les afficheurs supervisés par Sowel après une période d'absence dans une zone, les réveille au mouvement suivant."
+      "description": "Éteint les afficheurs supervisés par Sowel après une période d'absence dans une zone, les réveille à la dernière luminosité choisie par l'utilisateur au mouvement suivant."
     }
   },
-  "sowelVersion": ">=1.18.0"
+  "sowelVersion": ">=1.19.0"
 }
