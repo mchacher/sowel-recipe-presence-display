@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createRecipe, resolveBrightnessAlias } from "./index.js";
+import { createRecipe, resolveBrightnessAlias, resolveWakeAlias } from "./index.js";
 
 const recipe = createRecipe();
 
@@ -21,12 +21,15 @@ function makeCtx(opts: {
   motionSensors?: number;
   displayMissing?: boolean;
   brightnessAlias?: string | null;
+  wakeAlias?: string | null;
 } = {}) {
   const orders: MockOrder[] = [];
   const motion = opts.motion ?? true;
   const motionSensors = opts.motionSensors ?? 1;
   const displayMissing = opts.displayMissing ?? false;
-  const brightnessAlias = opts.brightnessAlias === undefined ? "set_brightness" : opts.brightnessAlias;
+  const brightnessAlias =
+    opts.brightnessAlias === undefined ? "set_brightness" : opts.brightnessAlias;
+  const wakeAlias = opts.wakeAlias === undefined ? "display_wake" : opts.wakeAlias;
 
   let zoneListener: ((event: Record<string, unknown>) => void) | null = null;
 
@@ -42,9 +45,13 @@ function makeCtx(opts: {
     equipmentManager: {
       getByIdWithDetails: (id: string) => {
         if (id !== DISPLAY_ID || displayMissing) return null;
-        const orderBindings = brightnessAlias
-          ? [{ alias: brightnessAlias, category: "set_display_brightness" }]
-          : [];
+        const orderBindings: Array<{ alias: string; category: string }> = [];
+        if (brightnessAlias) {
+          orderBindings.push({ alias: brightnessAlias, category: "set_display_brightness" });
+        }
+        if (wakeAlias) {
+          orderBindings.push({ alias: wakeAlias, category: "display_wake" });
+        }
         return {
           id,
           name: "Test Display",
@@ -97,7 +104,6 @@ const VALID_PARAMS = {
   zone: ZONE_ID,
   displays: [DISPLAY_ID],
   absence_threshold: "30s",
-  wake_brightness: 60,
 };
 
 // ============================================================
@@ -116,6 +122,21 @@ describe("resolveBrightnessAlias", () => {
   it("returns null when no matching order exists", () => {
     expect(resolveBrightnessAlias([{ alias: "lang", category: "set_language" }])).toBeNull();
     expect(resolveBrightnessAlias([])).toBeNull();
+  });
+});
+
+describe("resolveWakeAlias", () => {
+  it("returns the alias of the display_wake order", () => {
+    const a = resolveWakeAlias([
+      { alias: "bright", category: "set_display_brightness" },
+      { alias: "wake", category: "display_wake" },
+    ]);
+    expect(a).toBe("wake");
+  });
+
+  it("returns null when no display_wake order exists", () => {
+    expect(resolveWakeAlias([{ alias: "bright", category: "set_display_brightness" }])).toBeNull();
+    expect(resolveWakeAlias([])).toBeNull();
   });
 });
 
@@ -146,7 +167,16 @@ describe("validate", () => {
 
   it("refuses a display without the set_display_brightness order", () => {
     const { ctx } = makeCtx({ brightnessAlias: null });
-    expect(() => recipe.validate(VALID_PARAMS, ctx as never)).toThrow(/no order of category/);
+    expect(() => recipe.validate(VALID_PARAMS, ctx as never)).toThrow(
+      /no order of category "set_display_brightness"/,
+    );
+  });
+
+  it("refuses a display without the display_wake order (older firmware)", () => {
+    const { ctx } = makeCtx({ wakeAlias: null });
+    expect(() => recipe.validate(VALID_PARAMS, ctx as never)).toThrow(
+      /no order of category "display_wake".*upgrade/i,
+    );
   });
 
   it("refuses absence_threshold below 30 s", () => {
@@ -156,10 +186,10 @@ describe("validate", () => {
     ).toThrow(/between/);
   });
 
-  it("refuses wake_brightness out of range", () => {
+  it("absence_threshold above 2 h is also refused", () => {
     const { ctx } = makeCtx();
     expect(() =>
-      recipe.validate({ ...VALID_PARAMS, wake_brightness: 200 }, ctx as never),
+      recipe.validate({ ...VALID_PARAMS, absence_threshold: "3h" }, ctx as never),
     ).toThrow(/between/);
   });
 });
@@ -187,7 +217,7 @@ describe("state machine — motion-driven", () => {
     instance.stop();
   });
 
-  it("absence timer fires → set_brightness 0 on each display", () => {
+  it("absence timer fires → set_display_brightness 0 on each display", () => {
     const { ctx, orders, fireMotion } = makeCtx({ motion: true });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     fireMotion(false);
@@ -207,7 +237,7 @@ describe("state machine — motion-driven", () => {
     instance.stop();
   });
 
-  it("motion returns while sleeping → wake order dispatched", () => {
+  it("motion returns while sleeping → display_wake order dispatched", () => {
     const { ctx, orders, fireMotion } = makeCtx({ motion: true });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     fireMotion(false);
@@ -215,7 +245,7 @@ describe("state machine — motion-driven", () => {
     fireMotion(true);
     expect(orders).toEqual([
       { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
-      { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 60 },
+      { equipmentId: DISPLAY_ID, alias: "display_wake", value: null },
     ]);
     instance.stop();
   });
@@ -229,19 +259,18 @@ describe("state machine — motion-driven", () => {
     fireMotion(true);
     expect(orders).toEqual([
       { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
-      { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 60 },
+      { equipmentId: DISPLAY_ID, alias: "display_wake", value: null },
     ]);
     instance.stop();
   });
 
-  it("stop while sleeping → wake order dispatched", () => {
+  it("stop while sleeping → NO order (firmware owns the wake)", () => {
     const { ctx, orders } = makeCtx({ motion: false });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     vi.advanceTimersByTime(30000); // sleep fires
     instance.stop();
     expect(orders).toEqual([
       { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
-      { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 60 },
     ]);
   });
 
@@ -261,31 +290,15 @@ describe("state machine — motion-driven", () => {
     fireMotion(false);
     vi.advanceTimersByTime(30000); // sleep 2
     fireMotion(true); // wake 2
+    const aliases = orders.map((o) => o.alias);
+    expect(aliases).toEqual([
+      "set_brightness",
+      "display_wake",
+      "set_brightness",
+      "display_wake",
+    ]);
     const values = orders.map((o) => o.value);
-    expect(values).toEqual([0, 60, 0, 60]);
+    expect(values).toEqual([0, null, 0, null]);
     instance.stop();
-  });
-
-  it("ignored zone events do not affect the state", () => {
-    const { ctx, orders } = makeCtx({ motion: true });
-    const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
-    // Manually fire an event for a different zone.
-    const _ctx = ctx as unknown as {
-      eventBus: { onType: (t: string, h: (e: Record<string, unknown>) => void) => () => void };
-    };
-    // The instance already registered its listener at createInstance.
-    // We send an unrelated event via the SAME pipeline (other zoneId)
-    // by re-emitting from the listener bookkeeping we hold here.
-    // The simpler path: fire on zone "zone-other" — our makeCtx
-    // listener IS registered for ALL zone.data.changed events but
-    // filters by zoneId inside the recipe.  Trigger via fireMotion
-    // would target ZONE_ID, so we synthesise manually:
-    // (no-op: this scenario is implicit — the recipe's filter
-    // condition is the only guard against cross-zone interference,
-    // and the fact that the other tests pass under fireMotion
-    // pinning ZONE_ID is sufficient coverage.)
-    void _ctx;
-    instance.stop();
-    expect(orders).toEqual([]);
   });
 });
