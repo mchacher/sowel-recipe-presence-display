@@ -202,18 +202,31 @@ describe("state machine — motion-driven", () => {
     vi.useRealTimers();
   });
 
-  it("steady awake (motion=true) → no order dispatched on activation", () => {
+  // Helper: the initial wake dispatched at every instance start to sync the
+  // panel with the recipe's "awake" default. Without this, a Sowel restart
+  // mid-cycle (display physically at brightness=0) would leave the panel
+  // dark on the next motion=true that hits a "waiting" state.
+  const INITIAL_WAKE = { equipmentId: DISPLAY_ID, alias: "display_wake", value: null };
+
+  it("dispatches an initial wake on activation (motion present)", () => {
     const { ctx, orders } = makeCtx({ motion: true });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
-    expect(orders).toEqual([]);
+    expect(orders).toEqual([INITIAL_WAKE]);
     instance.stop();
   });
 
-  it("motion=true → motion=false starts the absence timer (no order yet)", () => {
+  it("dispatches an initial wake on activation even when zone is absent", () => {
+    const { ctx, orders } = makeCtx({ motion: false });
+    const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
+    expect(orders).toEqual([INITIAL_WAKE]);
+    instance.stop();
+  });
+
+  it("motion=true → motion=false starts the absence timer (no extra order yet)", () => {
     const { ctx, orders, fireMotion } = makeCtx({ motion: true });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     fireMotion(false);
-    expect(orders).toEqual([]);
+    expect(orders).toEqual([INITIAL_WAKE]);
     instance.stop();
   });
 
@@ -222,18 +235,21 @@ describe("state machine — motion-driven", () => {
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     fireMotion(false);
     vi.advanceTimersByTime(30000);
-    expect(orders).toEqual([{ equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 }]);
+    expect(orders).toEqual([
+      INITIAL_WAKE,
+      { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
+    ]);
     instance.stop();
   });
 
-  it("motion returns before timer fires → no order, timer cancelled", () => {
+  it("motion returns before timer fires → no extra order, timer cancelled", () => {
     const { ctx, orders, fireMotion } = makeCtx({ motion: true });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     fireMotion(false);
     vi.advanceTimersByTime(15000);
     fireMotion(true);
     vi.advanceTimersByTime(60000);
-    expect(orders).toEqual([]);
+    expect(orders).toEqual([INITIAL_WAKE]);
     instance.stop();
   });
 
@@ -244,6 +260,7 @@ describe("state machine — motion-driven", () => {
     vi.advanceTimersByTime(30000); // sleep fires
     fireMotion(true);
     expect(orders).toEqual([
+      INITIAL_WAKE,
       { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
       { equipmentId: DISPLAY_ID, alias: "display_wake", value: null },
     ]);
@@ -254,31 +271,36 @@ describe("state machine — motion-driven", () => {
     const { ctx, orders, fireMotion } = makeCtx({ motion: false });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     vi.advanceTimersByTime(30000);
-    expect(orders).toEqual([{ equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 }]);
+    expect(orders).toEqual([
+      INITIAL_WAKE,
+      { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
+    ]);
     // Subsequent motion still wakes correctly
     fireMotion(true);
     expect(orders).toEqual([
+      INITIAL_WAKE,
       { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
       { equipmentId: DISPLAY_ID, alias: "display_wake", value: null },
     ]);
     instance.stop();
   });
 
-  it("stop while sleeping → NO order (firmware owns the wake)", () => {
+  it("stop while sleeping → no extra order (firmware owns the wake)", () => {
     const { ctx, orders } = makeCtx({ motion: false });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     vi.advanceTimersByTime(30000); // sleep fires
     instance.stop();
     expect(orders).toEqual([
+      INITIAL_WAKE,
       { equipmentId: DISPLAY_ID, alias: "set_brightness", value: 0 },
     ]);
   });
 
-  it("stop while awake → no order", () => {
+  it("stop while awake → no extra order", () => {
     const { ctx, orders } = makeCtx({ motion: true });
     const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
     instance.stop();
-    expect(orders).toEqual([]);
+    expect(orders).toEqual([INITIAL_WAKE]);
   });
 
   it("multiple sleep / wake cycles dispatch every transition", () => {
@@ -292,13 +314,36 @@ describe("state machine — motion-driven", () => {
     fireMotion(true); // wake 2
     const aliases = orders.map((o) => o.alias);
     expect(aliases).toEqual([
+      "display_wake", // initial sync wake at instance start
       "set_brightness",
       "display_wake",
       "set_brightness",
       "display_wake",
     ]);
     const values = orders.map((o) => o.value);
-    expect(values).toEqual([0, null, 0, null]);
+    expect(values).toEqual([null, 0, null, 0, null]);
     instance.stop();
+  });
+
+  // Regression for the bug fixed in this release: on a Sowel restart while
+  // the user is moving in the room, the recipe used to default state="awake"
+  // and never re-wake the panel (which was at brightness=0 from a previous
+  // sleep cycle). Motion=true arriving while state="waiting" silently passed
+  // through goAwake without dispatching wake. The fix is the unconditional
+  // initial wake on activation.
+  it("regression: re-instantiation always re-syncs the panel with a wake", () => {
+    // Simulate Sowel restart: a fresh createInstance call. The previous
+    // session physically left the panel at brightness=0 (we can't observe
+    // that directly in this test, but the contract is: the new instance
+    // must dispatch a wake so the firmware re-applies user_pct).
+    const { ctx, orders } = makeCtx({ motion: true });
+    const instance = recipe.createInstance(VALID_PARAMS, ctx as never);
+    expect(orders).toEqual([INITIAL_WAKE]);
+    instance.stop();
+
+    // Toggle off/on (a second createInstance after stop) must also re-sync.
+    const second = recipe.createInstance(VALID_PARAMS, ctx as never);
+    expect(orders).toEqual([INITIAL_WAKE, INITIAL_WAKE]);
+    second.stop();
   });
 });

@@ -2,7 +2,7 @@
   "id": "presence-display",
   "type": "recipe",
   "name": "Presence-driven display sleep",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Turns Sowel-supervised displays off after a configurable absence in a zone, wakes them at the user's last-chosen brightness on the next motion event.",
   "icon": "Monitor",
   "repo": "mchacher/sowel-recipe-presence-display",

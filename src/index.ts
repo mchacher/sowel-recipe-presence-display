@@ -358,6 +358,19 @@ const recipe: RecipeDefinition = {
       goWaiting();
     }
 
+    // Sync the panel to the recipe's "awake" default at instance start.
+    // The recipe has no persisted state, so on a Sowel restart or instance
+    // toggle the in-memory `state` always boots as "awake" — but the panel
+    // may physically be at brightness=0 from a previous sleep cycle. Without
+    // this initial wake, the recipe only re-wakes the panel after a full
+    // absence→presence cycle completes with state reaching "sleeping" first;
+    // any motion=true arriving while state is "waiting" (5-min timer not yet
+    // expired) silently transitions back to "awake" and leaves the panel
+    // dark. An unconditional wake here is idempotent for an already-awake
+    // panel (firmware re-applies NVS user_pct) and recovers an asleep one.
+    ctx.log("Recipe started — syncing displays to awake");
+    dispatchWake();
+
     // Subscribe to zone aggregation changes.
     const unsubZone = ctx.eventBus.onType("zone.data.changed", (event) => {
       if (event.zoneId !== zoneId) return;
