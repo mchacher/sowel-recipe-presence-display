@@ -61,12 +61,17 @@ function makeCtx(opts: {
           orderBindings,
         };
       },
-      executeOrder: vi.fn(
-        async (equipmentId: string, alias: string, value: unknown): Promise<void> => {
-          orders.push({ equipmentId, alias, value });
-        },
-      ),
     },
+    dispatchOrder: vi.fn(
+      async (
+        equipmentId: string,
+        alias: string,
+        value: unknown,
+      ): Promise<{ success: boolean; error?: string }> => {
+        orders.push({ equipmentId, alias, value });
+        return { success: true };
+      },
+    ),
     zoneManager: {
       getById: (id: string) => (id === ZONE_ID ? { id: ZONE_ID, name: "Salon" } : null),
     },

@@ -13,7 +13,7 @@
 //   - sowel-plugin-displays v0.1.0+ (MQTT supervision)
 //
 // The recipe is plugin-distributed (spec 053+).  No Sowel core change
-// required — it consumes the standard zone aggregator + executeOrder
+// required — it consumes the standard zone aggregator + dispatchOrder
 // pipeline.
 
 // ============================================================
@@ -33,7 +33,6 @@ interface RecipeContext {
       dataBindings: Array<{ alias: string; category?: string }>;
       orderBindings: Array<{ alias: string; category?: string }>;
     } | null;
-    executeOrder(equipmentId: string, alias: string, value: unknown): Promise<void>;
   };
   zoneManager: {
     getById(id: string): { id: string; name: string } | null;
@@ -42,6 +41,13 @@ interface RecipeContext {
     getByZoneId(zoneId: string): { motion: boolean; motionSensors: number } | null;
   };
   log: (message: string, level?: "info" | "warn" | "error") => void;
+  // Spec 101 — dispatches an order attributed to this recipe instance, so the
+  // activity feed names the recipe as its source.
+  dispatchOrder(
+    equipmentId: string,
+    alias: string,
+    value: unknown,
+  ): Promise<{ success: boolean; error?: string }>;
   helpers: {
     parseDuration(value: unknown): number;
   };
@@ -286,7 +292,7 @@ const recipe: RecipeDefinition = {
           );
           continue;
         }
-        ctx.equipmentManager.executeOrder(displayId, alias, 0).catch((err: unknown) => {
+        ctx.dispatchOrder(displayId, alias, 0).catch((err: unknown) => {
           ctx.log(
             `Failed to sleep display "${eq.name}": ${err instanceof Error ? err.message : String(err)}`,
             "warn",
@@ -310,7 +316,7 @@ const recipe: RecipeDefinition = {
           );
           continue;
         }
-        ctx.equipmentManager.executeOrder(displayId, alias, null).catch((err: unknown) => {
+        ctx.dispatchOrder(displayId, alias, null).catch((err: unknown) => {
           ctx.log(
             `Failed to wake display "${eq.name}": ${err instanceof Error ? err.message : String(err)}`,
             "warn",
